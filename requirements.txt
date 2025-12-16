@@ -1,0 +1,26 @@
+# --- Core API ---
+fastapi==0.110.0
+uvicorn==0.29.0
+
+# --- Data modeling & validation ---
+pydantic==2.6.4
+
+# --- NLP / ML (lightweight, in-house) ---
+scikit-learn==1.4.1.post1
+numpy==1.26.4
+
+# --- Text processing ---
+regex==2023.12.25
+
+# --- Date handling ---
+python-dateutil==2.9.0.post0
+
+# --- Logging & utilities ---
+loguru==0.7.2
+
+# --- Optional (enable later, commented) ---
+# torch>=2.2.0
+# transformers>=4.39.0
+# sentence-transformers>=2.6.0
+# spacy>=3.7.4
+# faiss-cpu>=1.8.0
