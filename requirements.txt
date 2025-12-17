@@ -1,6 +1,11 @@
 # --- Core API ---
 fastapi==0.110.0
 uvicorn==0.29.0
+requests
+pytest
+groq
+openai
+python-dotenv
 
 # --- Data modeling & validation ---
 pydantic==2.6.4

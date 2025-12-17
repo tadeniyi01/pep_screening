@@ -71,7 +71,7 @@ class ScreeningOrchestrator:
 
         # ---------- RESPONSE ----------
         return {
-            "pep": pep_profile.dict(),
-            "adverse_media": media_result.dict(),
+            "pep": pep_profile.model_dump(),
+            "adverse_media": media_result.model_dump(),
             "audit_trace_id": trace.trace_id
         }

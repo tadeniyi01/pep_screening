@@ -61,7 +61,7 @@ class AdditionalInformation(BaseModel):
 class PEPProfile(BaseModel):
     name: str
 
-    gender: ConfidenceValue
+    gender: Optional[ConfidenceValue]
     middle_name: str = ""
 
     aliases: List[str] = []
@@ -88,7 +88,7 @@ class PEPProfile(BaseModel):
 
     reason: List[str] = []
 
-    alive_or_deceased: LifeStatus
+    alive_or_deceased: Optional[LifeStatus]
 
     pep_association: bool = False
     basis_for_pep_association: str = ""
