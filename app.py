@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import List
 
 from orchestrator import ScreeningOrchestrator
+from schemas.pep_response import ScreeningResponseSchema
+
 
 app = FastAPI(
     title="PEP & Adverse Media Screening API",
@@ -29,8 +31,7 @@ def root():
         "docs": "/docs"
     }
 
-
-@app.post("/screen")
+@app.post("/screen", response_model=ScreeningResponseSchema)
 def screen(payload: dict):
     return orchestrator.run(
         query=payload.get("query"),
