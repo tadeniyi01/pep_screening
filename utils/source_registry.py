@@ -8,5 +8,5 @@ SOURCE_CREDIBILITY = {
     "channels.tv": 0.85,
     "vanguardngr.com": 0.8,
     "punchng.com": 0.8,
-    "unknown": 0.6
+    "unknown": 0.5
 }

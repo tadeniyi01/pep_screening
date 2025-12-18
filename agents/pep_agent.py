@@ -4,6 +4,7 @@ import os
 import re
 from dotenv import load_dotenv
 from typing import List
+import ast
 
 from models.pep_models import (
     PEPProfile,
@@ -20,27 +21,36 @@ from agents.role_enrichment.confidence_aggregator import RoleConfidenceAggregato
 from agents.reason_summarization_agent import ReasonSummarizationAgent
 from agents.social_profile_agent import SocialProfileAgent
 from agents.biographic_enrichment_agent import BiographicEnrichmentAgent
+from agents.reasoning_agent import normalize_reason_output
 
 from services.pep_taxonomy_service import NigeriaPEPTaxonomyService
 from services.llm_service import LLMService
-
+from dotenv import load_dotenv
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 
-def _number_reason_paragraphs(paragraphs: list[str]) -> list[str]:
-    numbered = []
+def _number_reason_paragraphs(reasons) -> List[str]:
+    """
+    Ensure reasons is a List[str], even if the LLM returned a stringified list.
+    """
 
-    for i, p in enumerate(paragraphs, start=1):
-        if p.strip().startswith("[") and p.strip().endswith("]"):
-            raise ValueError(
-                "Received stringified list instead of List[str] in reasons"
-            )
+    if isinstance(reasons, list):
+        return [f"{i+1}. {r}" for i, r in enumerate(reasons)]
 
-        numbered.append(f"{i}. {p.strip()}")
+    # Stringified list from LLM
+    if isinstance(reasons, str):
+        try:
+            parsed = ast.literal_eval(reasons)
+            if isinstance(parsed, list):
+                return [f"{i+1}. {r}" for i, r in enumerate(parsed)]
+        except Exception:
+            pass
 
-    return numbered
+    raise ValueError(
+        f"Invalid reasons format. Expected List[str], got: {type(reasons)}"
+    )
 
 
 
@@ -236,9 +246,12 @@ class PEPAgent:
             "links": links
         }
 
-        final_reason_list = self.reason_summarizer.summarize(reason_payload) or []
-        
+        raw_reason = self.reason_summarizer.summarize(reason_payload)
+
+        final_reason_list = normalize_reason_output(raw_reason)
+
         numbered_reason_list = _number_reason_paragraphs(final_reason_list)
+
 
         # if the summarizer returned no distinct paragraphs, fall back to deterministic basis
         if not numbered_reason_list:

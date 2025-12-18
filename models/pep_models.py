@@ -3,10 +3,13 @@ from typing import List, Dict, Optional
 from pydantic import BaseModel, Field
 
 
+# ---------- Non-Pydantic Domain Result ----------
+
 @dataclass
 class EntityLinkResult:
     confidence: float
     signals: List[str]
+
 
 # ---------- Common ----------
 
@@ -29,7 +32,7 @@ class Education(BaseModel):
 
 class LifeStatus(BaseModel):
     status: str = Field(..., pattern="^(Alive|Deceased|Unknown)$")
-    date_of_death: str = ""
+    date_of_death: Optional[str] = None
 
 
 # ---------- Image ----------
@@ -49,11 +52,11 @@ class ProfileImage(BaseModel):
 # ---------- Additional Information ----------
 
 class AdditionalInformation(BaseModel):
-    linkedin_profile: Dict = {}
-    instagram_profile: Dict = {}
-    facebook_profile: Dict = {}
-    twitter_profile: Dict = {}
-    notable_achievements: List[str] = []
+    linkedin_profile: Dict = Field(default_factory=dict)
+    instagram_profile: Dict = Field(default_factory=dict)
+    facebook_profile: Dict = Field(default_factory=dict)
+    twitter_profile: Dict = Field(default_factory=dict)
+    notable_achievements: List[str] = Field(default_factory=list)
 
 
 # ---------- Main PEP Profile ----------
@@ -61,44 +64,46 @@ class AdditionalInformation(BaseModel):
 class PEPProfile(BaseModel):
     name: str
 
-    gender: Optional[ConfidenceValue]
+    gender: Optional[ConfidenceValue] = None
     middle_name: str = ""
 
-    aliases: List[str] = []
-    other_names: List[str] = []
+    aliases: List[str] = Field(default_factory=list)
+    other_names: List[str] = Field(default_factory=list)
 
     is_pep: bool
     pep_level: str
 
     organisation_or_party: str = ""
 
-    current_positions: List[str] = []
-    previous_positions: List[str] = []
+    current_positions: List[str] = Field(default_factory=list)
+    previous_positions: List[str] = Field(default_factory=list)
 
     date_of_birth: str = ""
     age: Optional[ConfidenceValue] = None
 
-    education: List[Education] = []
+    education: List[Education] = Field(default_factory=list)
 
-    relatives: List[str] = []
-    associates: List[str] = []
+    relatives: List[str] = Field(default_factory=list)
+    associates: List[str] = Field(default_factory=list)
 
     state: str = ""
     country: str
 
-    reason: List[str] = []
+    reason: List[str] = Field(default_factory=list)
 
-    alive_or_deceased: Optional[LifeStatus]
+    alive_or_deceased: Optional[LifeStatus] = None
 
     pep_association: bool = False
     basis_for_pep_association: str = ""
 
-    links: List[str] = []
+    links: List[str] = Field(default_factory=list)
 
     information_recency: str = ""
 
-    image: List[ProfileImage] = []
+    image: List[ProfileImage] = Field(default_factory=list)
 
-    additional_information: AdditionalInformation
+    additional_information: AdditionalInformation = Field(
+        default_factory=AdditionalInformation
+    )
 
-    titles: List[str] = []
+    titles: List[str] = Field(default_factory=list)

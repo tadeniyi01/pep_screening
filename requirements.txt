@@ -6,6 +6,7 @@ pytest
 groq
 openai
 python-dotenv
+feedparser
 
 # --- Data modeling & validation ---
 pydantic==2.6.4

@@ -1,84 +1,80 @@
-# agents/adverse_media_agent.py
-
-from models.media_models import AdverseMediaResult
-from utils.scoring import calculate_weighted_score, derive_risk_status
-from utils.source_registry import SOURCE_CREDIBILITY
-from utils.url_utils import extract_domain
-from agents.reasoning_agent import ReasoningAgent
-from agents.disambiguation_agent import DisambiguationAgent
-from agents.entity_linking_agent import EntityLinkingAgent
-from services.news_service import NewsService
 from typing import Optional
+from models.media_models import AdverseMediaResult
+from services.news_service import NewsService
+from services.news.provider_registry import ProviderRegistry
+from utils.scoring import (
+    suppress_false_positives,
+    score_item,
+    calculate_weighted_score,
+    derive_risk_status,
+)
+from agents.sar_narrative_agent import SARNarrativeAgent
 
 
 class AdverseMediaAgent:
-    def __init__(self):
-        self.news = NewsService()
-        self.reasoning = ReasoningAgent()
-        self.disambiguator = DisambiguationAgent()
-        self.entity_linker = EntityLinkingAgent()
+    def __init__(self, registry: ProviderRegistry):
+        self.news = NewsService(registry)
+        self.sar = SARNarrativeAgent()
 
     def analyze(
         self,
         name: str,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
     ) -> AdverseMediaResult:
-        """
-        Analyze adverse media for a subject.
-        Supports optional date filtering.
-        """
 
-        articles = self.news.fetch(
-            name=name,
+        # ---------- Fetch ----------
+        raw_articles = self.news.fetch(
+            query=name,
             start_date=start_date,
             end_date=end_date
         )
 
-        linked = []
+        # ---------- Filter ----------
+        filtered = suppress_false_positives(raw_articles, name)
 
-        for item in articles:
-            if not item.persons:
-                continue
+        for item in filtered:
+            item.final_score = score_item(item)
 
-            # --- Source credibility weighting ---
-            domain = extract_domain(item.source)
-            credibility = SOURCE_CREDIBILITY.get(domain, 0.5)
-            item.credibility_score = credibility
-
-            # --- Entity linking ---
-            link = self.entity_linker.link(
-                query_name=name,
-                candidate_name=item.persons[0],
-                query_country="",
-                candidate_country=item.country,
-                query_positions=[],
-                candidate_positions=[],
-                query_org="",
-                candidate_org="",
-                source_credibility=credibility
+        if not filtered:
+            sar_text = self.sar.generate(
+                subject_name=name,
+                articles=[],
+                overall_score=0.0,
+                status="Clear",
             )
 
-            if link.confidence >= 0.6:
-                item.entity_link_confidence = link.confidence
-                item.entity_link_signals = link.signals
-                linked.append(item)
+            return AdverseMediaResult(
+                query=name,
+                total=0,
+                media=[],
+                weighted_score=0.0,
+                status="Clear",
+                reason=["No credible adverse media identified."],
+                sar_narrative=sar_text,
+            )
 
-        # --- Risk aggregation ---
-        weighted_score = calculate_weighted_score(linked)
+        # ---------- Aggregate ----------
+        weighted_score = calculate_weighted_score(filtered)
         status = derive_risk_status(weighted_score)
 
-        # --- LLM reasoning ---
-        reason = self.reasoning.adverse_media_reason(
-            name=name,
-            articles=linked
-        ) if linked else "No credible adverse media found."
+        sar_text = self.sar.generate(
+            subject_name=name,
+            articles=filtered,
+            overall_score=weighted_score,
+            status=status,
+        )
 
         return AdverseMediaResult(
             query=name,
-            total=len(linked),
-            media=linked,
+            total=len(filtered),
+            media=filtered,
             weighted_score=weighted_score,
-            reason=reason,
-            status=status
+            status=status,
+            reason=[
+                f"{len(filtered)} adverse media articles identified.",
+                f"Weighted adverse media score: {weighted_score}.",
+                f"Overall risk classification: {status}.",
+            ],
+            sar_narrative=sar_text,
         )

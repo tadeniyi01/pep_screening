@@ -1,31 +1,77 @@
-# services/news_service.py
+import logging
+from typing import List, Optional
 
 from models.media_models import MediaItem
-from typing import List, Optional
-import json
-from pathlib import Path
+from services.news.provider_registry import ProviderRegistry
+from utils.url_utils import extract_domain
+
+logger = logging.getLogger(__name__)
 
 
 class NewsService:
-    def __init__(self):
-        data_path = Path("data/mock_news.json")
-        self.data = json.loads(data_path.read_text())
+    """
+    Aggregates multiple news providers and returns
+    de-duplicated adverse media articles.
+    """
+
+    def __init__(self, registry: ProviderRegistry):
+        self.registry = registry
 
     def fetch(
         self,
-        name: str,
+        query: str,
         start_date: Optional[str] = None,
-        end_date: Optional[str] = None
+        end_date: Optional[str] = None,
     ) -> List[MediaItem]:
         """
-        Fetch news articles mentioning the name.
-        Date filtering is optional (prototype-safe).
+        Fetch news articles related to a query string.
+
+        Args:
+            query: Person or entity name
+            start_date: Optional ISO date (YYYY-MM-DD)
+            end_date: Optional ISO date (YYYY-MM-DD)
+
+        Returns:
+            De-duplicated list of MediaItem objects
         """
+        if not query or not query.strip():
+            return []
 
-        results = []
+        articles: List[MediaItem] = []
 
-        for item in self.data:
-            if name.lower() in item["headline"].lower():
-                results.append(MediaItem(**item))
+        for provider in self.registry.active_providers():
+            try:
+                # Providers currently only accept `query`
+                provider_items = provider.fetch(query)
+                articles.extend(provider_items)
 
-        return results
+            except Exception as e:
+                logger.warning(
+                    "News provider '%s' failed for query '%s': %s",
+                    provider.name,
+                    query,
+                    str(e),
+                    exc_info=True,
+                )
+
+        return self._deduplicate(articles)
+
+    def _deduplicate(self, items: List[MediaItem]) -> List[MediaItem]:
+        """
+        Remove duplicate articles based on headline + date + source domain.
+        """
+        seen = set()
+        unique: List[MediaItem] = []
+
+        for item in items:
+            key = (
+                item.headline.lower().strip(),
+                item.date,
+                extract_domain(item.source),
+            )
+
+            if key not in seen:
+                seen.add(key)
+                unique.append(item)
+
+        return unique

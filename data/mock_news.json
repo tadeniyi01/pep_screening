@@ -1,1 +1,16 @@
-{}
+[
+  {
+    "date": "2021-10-12",
+    "source": "https://www.reuters.com/world/africa/nigeria-corruption-probe-2021-10-12",
+    "headline": "Nigeria opens corruption probe into former state governor",
+    "excerpt": "Authorities confirmed an investigation is ongoing but no charges have been filed.",
+    "score": 70,
+    "inferring": "Negative",
+    "tags": ["corruption", "investigation"],
+    "language": "en",
+    "persons": ["John Doe"],
+    "organizations": ["EFCC"],
+    "country": "Nigeria"
+  },
+  
+]
