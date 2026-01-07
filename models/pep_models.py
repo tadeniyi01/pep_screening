@@ -32,7 +32,7 @@ class Education(BaseModel):
 
 class LifeStatus(BaseModel):
     status: str = Field(..., pattern="^(Alive|Deceased|Unknown)$")
-    date_of_death: Optional[str] = None
+    date_of_death: str = ""
 
 
 # ---------- Image ----------

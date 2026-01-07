@@ -39,22 +39,21 @@ def normalize_reason_output(reason: Union[str, List[str]]) -> List[str]:
     # Fallback
     return [str(reason)]
 
+from models.llm_schemas import PEPReasoningList
+from config.prompts import Prompts
+
 class ReasoningAgent:
-    def __init__(self):
-        self.llm = LLMService()
+    def __init__(self, llm_service: LLMService):
+        self.llm = llm_service
 
-    def pep_reason(self, name: str, positions: list, level: str) -> list:
-        prompt = f"""
-        Explain why {name} qualifies as a Politically Exposed Person.
-        Positions: {positions}
-        Risk Level: {level}
-        Respond concisely.
-        """
-        return [self.llm.generate(prompt)]
+    async def pep_reason(self, name: str, positions: list, level: str) -> list:
+        prompt = Prompts.PEP_REASON.format(name=name, positions=positions, level=level)
+        try:
+            result = await self.llm.generate_structured(prompt, PEPReasoningList)
+            return result.reasons
+        except Exception:
+            return [f"Detailed reasoning unavailable for {name}"]
 
-    def adverse_media_reason(self, name: str, headline: str) -> str:
-        prompt = f"""
-        Explain the adverse media risk for {name}.
-        Headline: {headline}
-        """
-        return self.llm.generate(prompt)
+    async def adverse_media_reason(self, name: str, headline: str) -> str:
+        prompt = Prompts.ADVERSE_MEDIA_REASON.format(name=name, headline=headline)
+        return await self.llm.generate(prompt)

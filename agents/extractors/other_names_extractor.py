@@ -59,6 +59,6 @@ def extract_other_names(
     )
 
     return {
-        "value": results if confidence >= 0.7 else [],
+        "value": results if confidence >= 0.6 else [],
         "confidence": round(confidence, 2)
     }

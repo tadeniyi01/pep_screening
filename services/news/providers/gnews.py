@@ -1,8 +1,8 @@
-import requests
+# services/news/providers/gnews.py
+import httpx
 from typing import List
 from models.media_models import MediaItem
 from services.news.providers.base import NewsProvider
-
 
 class GNewsProvider(NewsProvider):
     name = "gnews"
@@ -12,8 +12,7 @@ class GNewsProvider(NewsProvider):
         self.url = "https://gnews.io/api/v4/search"
         self.enabled = bool(self.api_key)
 
-    def fetch(self, query: str) -> List[MediaItem]:
-        # Gracefully disable provider if no API key
+    async def fetch(self, query: str) -> List[MediaItem]:
         if not self.enabled:
             return []
 
@@ -25,11 +24,11 @@ class GNewsProvider(NewsProvider):
         }
 
         try:
-            response = requests.get(self.url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(self.url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
         except Exception:
-            # Never crash the pipeline on provider failure
             return []
 
         items: List[MediaItem] = []
@@ -42,7 +41,7 @@ class GNewsProvider(NewsProvider):
                     headline=article.get("title", ""),
                     excerpt=article.get("description") or "",
                     score=65.0,
-                    inferring="Negative",
+                    inferring="Neutral",
                     tags=[],
                     language="en",
                     persons=[query],

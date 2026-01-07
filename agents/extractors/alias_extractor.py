@@ -83,6 +83,6 @@ def extract_aliases(
     )
 
     return {
-        "value": aliases if confidence >= 0.75 else [],
+        "value": aliases if confidence >= 0.60 else [],
         "confidence": round(confidence, 2)
     }

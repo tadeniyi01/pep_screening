@@ -34,6 +34,8 @@ class MediaItem(BaseModel):
     final_score: Optional[float] = Field(None, ge=0, le=100)
     explanation: Optional[str] = None
 
+    evidence_type: Optional[str] = None
+
 
 # ---------- Aggregated Result ----------
 

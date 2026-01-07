@@ -1,86 +1,41 @@
-import json
-import requests
+# agents/role_discovery/news_role_source.py
 from typing import List
 from models.role_models import DiscoveredRole
-
+from services.news.provider_registry import ProviderRegistry
 
 class NewsRoleSource:
     """
-    Extracts public roles from news coverage (GDELT).
-    This is a supporting source — not authoritative.
+    Role source that fetches potential roles from news providers
+    registered in the ProviderRegistry.
     """
+    def __init__(self, registry: ProviderRegistry):
+        self.registry = registry
 
-    SOURCE = "News"
-    BASE_CONFIDENCE = 0.65
-
-    ROLE_KEYWORDS = {
-        "president": "President",
-        "governor": "Governor",
-        "senator": "Senator",
-        "minister": "Minister",
-        "vice president": "Vice President",
-        "lawmaker": "Lawmaker",
-        "chairman": "Chairman",
-    }
-
-    def fetch(self, name: str, country: str) -> List[DiscoveredRole]:
-        params = {
-            "query": name,
-            "mode": "ArtList",
-            "maxrecords": 50,
-            "format": "json",
-        }
-
-        try:
-            response = requests.get(
-                "https://api.gdeltproject.org/api/v2/doc/doc",
-                params=params,
-                timeout=20,
-            )
-            response.raise_for_status()
-        except Exception as e:
-            print(f"[ROLE SOURCE ERROR] NewsRoleSource: {e}")
-            return []
-
-        data = response.json()
-        articles = data.get("articles", [])
-
+    async def fetch(self, name: str, country: str) -> List[DiscoveredRole]:
         roles: List[DiscoveredRole] = []
 
-        for article in articles:
-            title = article.get("title", "") or ""
-            snippet = article.get("snippet", "") or ""
-            text = f"{title} {snippet}".lower()
-
-            for keyword, normalized_title in self.ROLE_KEYWORDS.items():
-                if keyword in text:
+        for provider in self.registry.providers:
+            try:
+                # Try passing country only if provider supports it
+                fetch_method = getattr(provider, "fetch")
+                if "country" in fetch_method.__code__.co_varnames:
+                    items = await fetch_method(name, country=country)
+                else:
+                    items = await fetch_method(name)
+                for item in items:
+                    # Map headline/entity info into a DiscoveredRole
                     roles.append(
                         DiscoveredRole(
-                            title=normalized_title,
-                            organisation=self._infer_org(normalized_title, country),
-                            country=country,
-                            start_year=None,
+                            title=item.headline or "Public Office Holder",
+                            organisation=item.organizations[0] if item.organizations else "",
+                            country=item.country or country,
+                            start_year=None,  # News roles rarely have exact years
                             end_year=None,
-                            source=self.SOURCE,
-                            confidence=self.BASE_CONFIDENCE,
-                            raw_reference=json.dumps({
-                                "source": "GDELT",
-                                "title": title,
-                                "url": article.get("url"),
-                                "keyword": keyword,
-                            }),
+                            source=provider.name,
+                            confidence=0.5  # Default medium confidence for news evidence
                         )
                     )
+            except Exception as e:
+                print(f"[NewsRoleSource ERROR] {provider.name}: {e}")
 
         return roles
-
-    def _infer_org(self, title: str, country: str) -> str:
-        """
-        Conservative organisation inference.
-        """
-        if country == "NG":
-            if title == "President":
-                return "Federal Republic of Nigeria"
-            if title == "Governor":
-                return "State Government of Nigeria"
-        return ""

@@ -83,6 +83,6 @@ def extract_relatives(
     )
 
     return {
-        "value": relatives if confidence >= 0.75 else [],
+        "value": relatives if confidence >= 0.60 else [],
         "confidence": round(confidence, 2)
     }

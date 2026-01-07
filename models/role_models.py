@@ -15,6 +15,8 @@ class DiscoveredRole(BaseModel):
         ..., description="wikidata | registry | news | llm"
     )
 
+    source_detail: Optional[str] = None
+
     confidence: float = Field(
         ..., ge=0.0, le=1.0
     )

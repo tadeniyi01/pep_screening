@@ -98,6 +98,6 @@ def extract_associates(
     )
 
     return {
-        "value": associates if confidence >= 0.75 else [],
+        "value": associates if confidence >= 0.60 else [],
         "confidence": round(confidence, 2)
     }

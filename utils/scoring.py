@@ -71,14 +71,12 @@ def score_item(item: MediaItem) -> float:
     final_score = round(min(raw_score, 100.0), 2)
     item.final_score = final_score
 
-    # --- Per-article explanation (SAR-safe) ---
+    # --- Per-article explanation (Professional Narrative) ---
+    recency_desc = "recent" if decay == 1.0 else "historic" if decay < 0.5 else "past"
     item.explanation = (
-        f"Published on {item.date}. "
-        f"Source domain '{domain}' assessed with credibility {credibility}. "
-        f"Article classified as {item.inferring.lower()} sentiment "
-        f"(multiplier {sentiment_multiplier}). "
-        f"Recency decay factor applied: {decay}. "
-        f"Final adverse media contribution score: {final_score}."
+        f"This article from {item.date} was published by {domain} and is classified as "
+        f"{item.inferring.lower()} in sentiment. Given the source's market presence and "
+        f"the {recency_desc} nature of the report, it contributes to the overall risk profile."
     )
 
     return final_score

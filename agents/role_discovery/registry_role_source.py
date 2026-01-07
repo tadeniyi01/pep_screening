@@ -6,13 +6,25 @@ from models.role_models import DiscoveredRole
 class RegistryRoleSource:
     SOURCE_NAME = "Registry"
 
-    def __init__(self):
-        self.registry_path = Path(
-            "data/registries/ng_public_offices.json"
-        )
+    NIGERIA_ALIASES = {
+        "NG",
+        "NGA",
+        "NIGERIA",
+        "FEDERAL REPUBLIC OF NIGERIA",
+        "NAIJA",
+        "9JA",
+    }
 
-    def fetch(self, name: str, country: str):
-        if country != "NG" or not self.registry_path.exists():
+    def __init__(self):
+        self.registry_path = Path("data/registries/ng_public_offices.json")
+
+    async def fetch(self, name: str, country: str):
+        if not self.registry_path.exists():
+            return []
+
+        country_norm = country.strip().upper()
+
+        if country_norm not in self.NIGERIA_ALIASES:
             return []
 
         name_lower = name.lower()
@@ -22,19 +34,19 @@ class RegistryRoleSource:
             records = json.load(f)
 
         for record in records:
-            if record["name"].lower() != name_lower:
+            if record.get("name", "").lower() != name_lower:
                 continue
 
             roles.append(
                 DiscoveredRole(
                     title=record["title"],
                     organisation=record["organisation"],
-                    country=country,
+                    country="NG",  # ✅ normalize output
                     start_year=record.get("start_year"),
                     end_year=record.get("end_year"),
                     source=self.SOURCE_NAME,
                     confidence=0.80,
-                    raw_reference=json.dumps(record),  # ✅ FIX
+                    raw_reference=json.dumps(record),
                 )
             )
 

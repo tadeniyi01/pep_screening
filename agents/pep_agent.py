@@ -1,19 +1,35 @@
 # agents/pep_agent.py
-from datetime import datetime, timezone
-import os
-import re
-from dotenv import load_dotenv
-from typing import List
-import ast
 
+from datetime import datetime, date, timezone
+import os
+from typing import List, Optional
+import logging
+
+from config import settings
+
+# =========================
+# Models (DOMAIN)
+# =========================
 from models.pep_models import (
     PEPProfile,
     ConfidenceValue,
     LifeStatus,
-    AdditionalInformation
+    AdditionalInformation,
 )
 
-from agents.reasoning_agent import ReasoningAgent
+# NOTE: Kept for compatibility / schema boundary
+from schemas.pep_response import (
+    PEPProfileSchema,
+    AdditionalInformationSchema,
+    ConfidenceValueSchema,
+    LifeStatusSchema,
+)
+
+# =========================
+# Agents
+# =========================
+from agents.role_discovery.wikidata_role_source import WikidataRoleSource
+from agents.reasoning_agent import ReasoningAgent, normalize_reason_output
 from agents.disambiguation_agent import DisambiguationAgent
 from agents.entity_linking_agent import EntityLinkingAgent
 from agents.role_enrichment_agent import RoleEnrichmentAgent
@@ -21,296 +37,397 @@ from agents.role_enrichment.confidence_aggregator import RoleConfidenceAggregato
 from agents.reason_summarization_agent import ReasonSummarizationAgent
 from agents.social_profile_agent import SocialProfileAgent
 from agents.biographic_enrichment_agent import BiographicEnrichmentAgent
-from agents.reasoning_agent import normalize_reason_output
 
+# =========================
+# Services
+# =========================
 from services.pep_taxonomy_service import NigeriaPEPTaxonomyService
 from services.llm_service import LLMService
-from dotenv import load_dotenv
-load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# =========================
+# Utils
+# =========================
+from utils.role_resolution import split_current_previous_roles
+from utils.reason_paragraphs import _number_reason_paragraphs
+from utils.llm_bio_helper import (
+    _infer_gender,
+    _infer_aliases,
+    _infer_alive_or_deceased,
+    _infer_associates,
+    _infer_state,
+    _infer_dob,
+    _infer_education,
+    _infer_relatives,
+    _infer_notable_achievements,
+)
 
-def _number_reason_paragraphs(reasons) -> List[str]:
-    """
-    Ensure reasons is a List[str], even if the LLM returned a stringified list.
-    """
-
-    if isinstance(reasons, list):
-        return [f"{i+1}. {r}" for i, r in enumerate(reasons)]
-
-    # Stringified list from LLM
-    if isinstance(reasons, str):
-        try:
-            parsed = ast.literal_eval(reasons)
-            if isinstance(parsed, list):
-                return [f"{i+1}. {r}" for i, r in enumerate(parsed)]
-        except Exception:
-            pass
-
-    raise ValueError(
-        f"Invalid reasons format. Expected List[str], got: {type(reasons)}"
+# =========================
+# Logging
+# =========================
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
+    logger.addHandler(handler)
 
 
-
+# ============================================================
+# PEP Agent
+# ============================================================
 class PEPAgent:
-    def __init__(self, llm_provider: str = "groq"):
-        # --- Core agents ---
-        self.reasoning = ReasoningAgent()
+    """
+    Evidence-first PEP determination agent.
+    Structured sources are authoritative; LLM is assistive.
+    """
+
+    CURRENT_YEAR = datetime.now(timezone.utc).year
+
+    def __init__(self, llm_service: LLMService, news_provider_registry=None):
+        # Injected dependency
+        self.llm_service = llm_service
+        
+        self.reasoning = ReasoningAgent(self.llm_service)
         self.disambiguator = DisambiguationAgent()
         self.entity_linker = EntityLinkingAgent()
-        self.taxonomy = NigeriaPEPTaxonomyService()
         self.confidence_aggregator = RoleConfidenceAggregator()
         self.biographic_enricher = BiographicEnrichmentAgent()
+        self.wikidata_role_source = WikidataRoleSource()
+        self.taxonomy = NigeriaPEPTaxonomyService()
 
-        # --- LLM ---
-        self.llm_service = self._init_llm(llm_provider)
+        # Injected dependency
+        self.llm_service = llm_service
+        
         self.reason_summarizer = ReasonSummarizationAgent(self.llm_service)
         self.social_profile_agent = SocialProfileAgent(self.llm_service)
 
-        # --- Role enrichment ---
-        self.role_enricher = RoleEnrichmentAgent(llm_service=self.llm_service)
+        self.role_enricher = RoleEnrichmentAgent(
+            news_provider_registry=news_provider_registry
+        )
 
-    def _init_llm(self, provider: str) -> LLMService:
-        if provider == "groq":
-            from groq import Groq
-            return LLMService(
-                client=Groq(api_key=GROQ_API_KEY),
-                model="moonshotai/kimi-k2-instruct-0905",
-                temperature=0.0
+        logger.info("PEPAgent initialized with injected LLM service")
+
+    # ------------------------------------------------------------
+    # Structured Evidence Gate
+    # ------------------------------------------------------------
+    def _evaluate_structured_pep(
+        self, evidence: Optional[List[dict]]
+    ) -> tuple[bool, List[str], List[str]]:
+
+        if not evidence:
+            return False, [], []
+
+        confirmed_roles: List[str] = []
+        reasons: List[str] = []
+
+        for e in evidence:
+            if e.get("type") != "structured_pep":
+                continue
+
+            confidence = e.get("confidence", 0.0)
+            if confidence < 0.80:
+                continue
+
+            role = e.get("role", "Public Office Holder")
+            org = e.get("organisation", "")
+            source = e.get("source", "Unknown")
+
+            confirmed_roles.append(role)
+            reasons.append(
+                f"{source} confirms public office role: {role}"
+                f"{' at ' + org if org else ''} (confidence {confidence})."
             )
 
-        if provider == "openai":
-            from openai import OpenAI
-            return LLMService(
-                client=OpenAI(api_key=OPENAI_API_KEY),
-                model="gpt-4o-mini",
-                temperature=0.0
-            )
+        if confirmed_roles:
+            return True, confirmed_roles, _number_reason_paragraphs(reasons)
 
-        raise ValueError(f"Unsupported LLM provider: {provider}")
+        return False, [], []
 
-    def evaluate(self, name: str, country: str) -> PEPProfile:
-        candidate_name = name
-        candidate_country = country
+    def _build_structured_pep_profile(
+        self,
+        name: str,
+        country: str,
+        roles: List[str],
+        numbered_reasons: List[str],
+    ) -> PEPProfile:
 
-        # --- 0. ROLE DISCOVERY ---
-        roles = self.role_enricher.enrich(name, country)
-        print("DISCOVERED ROLES:", roles)
-
-        if not roles:
-            return self._not_pep(name, country, ["1. No public roles discovered."])
-
-        # --- 1. CONFIDENCE AGGREGATION ---
-        aggregated_roles = self.confidence_aggregator.aggregate(roles)
-        print("AGGREGATED ROLES:", aggregated_roles)
-
-        trusted_roles = [r for r in aggregated_roles if r.confidence >= 0.75]
-
-        if not trusted_roles:
-            return self._not_pep(
-                name, country, ["1. Public roles identified but none met confidence threshold."]
-            )
-
-        # --- 2. CURRENT / PREVIOUS POSITIONS ---
-        current_year = datetime.now(timezone.utc).year
-        current_positions, previous_positions = [], []
-
-        for role in trusted_roles:
-            if role.end_year is None or role.end_year >= current_year:
-                current_positions.append(role.title)
-            else:
-                previous_positions.append(role.title)
-
-        primary_role = next((r for r in trusted_roles if r.end_year is None), trusted_roles[0])
-        candidate_org = primary_role.organisation
-
-        # --- 3. DISAMBIGUATION ---
-        disamb = self.disambiguator.disambiguate(
-            query_name=name,
-            candidate_name=candidate_name,
-            candidate_country=candidate_country,
-            query_country=country
-        )
-        if not disamb.get("match"):
-            return self._not_pep(name, country, ["1. Name disambiguation failed — identity could not be confirmed."])
-
-        # --- 4. ENTITY LINKING ---
-        link = self.entity_linker.link(
-            query_name=name,
-            candidate_name=candidate_name,
-            query_country=country,
-            candidate_country=candidate_country,
-            query_positions=current_positions,
-            candidate_positions=current_positions,
-            query_org=candidate_org,
-            candidate_org=candidate_org,
-            source_credibility=1.0
-        )
-        if link.confidence < 0.65:
-            return self._not_pep(name, country, ["1. Entity linking confidence below acceptable threshold."])
-
-        # --- 5. TAXONOMY ---
-        taxonomy = self.taxonomy.classify(current_positions)
-        if taxonomy["pep_level"] == "Not a PEP":
-            return self._not_pep(name, country, ["1. No Nigeria PEP role matched taxonomy criteria."])
-
-        # --- 6. BIOGRAPHIC ENRICHMENT ---
-        # Pass evidence sources into biographic enricher: role sources often include raw_reference/text
-        # RoleEnrichmentAgent should already return roles with raw_reference and possibly a 'evidence' list.
-        # We'll construct a conservative 'sources' list for biographic extraction:
-        sources_for_bio = []
-        for r in aggregated_roles:
-            src = {"source": r.source, "text": getattr(r, "raw_text", "") or "", "image_url": getattr(r, "image_url", None)}
-            # if raw_reference is a URL string, include it so image/links detection can pick it up
-            if getattr(r, "raw_reference", None):
-                src.setdefault("url", r.raw_reference)
-            sources_for_bio.append(src)
-
-        # also include entity_link signals if available
-        if getattr(link, "signals", None):
-            for s in link.signals:
-                sources_for_bio.append({"source": "entity_link", "text": str(s)})
-
-        bio = self.biographic_enricher.enrich(
-            name=name,
-            country=country,
-            sources=sources_for_bio,
-            roles=trusted_roles
-        )
-
-        # --- 7. LINKS & IMAGE AGGREGATION ---
-        link_set = set()
-        # aggregated_roles raw_reference (if string)
-        for r in aggregated_roles:
-            rr = getattr(r, "raw_reference", None)
-            if rr:
-                # raw_reference might be JSON; try to include if it's a URL-like string
-                if isinstance(rr, str) and (rr.startswith("http") or "://" in rr):
-                    link_set.add(rr)
-                else:
-                    # keep non-URL raw_reference too for audit (but not in links to UI)
-                    pass
-
-        # include social profile urls if present in social resolve
-        social = self.social_profile_agent.resolve(name=name, country=country)
-        for k in ["linkedin_profile", "twitter_profile", "facebook_profile", "instagram_profile"]:
-            p = social.get(k) or {}
-            url = p.get("url") or p.get("profile_url")
-            if url:
-                link_set.add(url)
-
-        # include images from bio
-        images = bio.get("image", []) or []
-        for img in images:
-            if isinstance(img, dict):
-                url = img.get("url")
-            else:
-                url = img
-            if url:
-                link_set.add(url)
-
-        links = sorted(link_set)
-
-        # --- 8. INFORMATION RECENCY ---
-        years = [r.start_year for r in trusted_roles if r.start_year]
-        information_recency = f"Verified as of {max(years)}" if years else "Recency undetermined"
-
-        # --- 9. REASON SUMMARIZATION via LLM ---
-        reason_payload = {
-            "entity": {"name": name, "country": country},
-            "accepted_roles": [
-                {
-                    "title": r.title,
-                    "organisation": r.organisation,
-                    "source": r.source,
-                    "confidence": r.confidence,
-                    "status": "current" if r.end_year is None else "previous"
-                }
-                for r in trusted_roles
-            ],
-            "rejected_roles": [
-                {
-                    "title": r.title,
-                    "organisation": r.organisation,
-                    "source": r.source,
-                    "confidence": r.confidence,
-                    "reason": "Below confidence threshold"
-                }
-                for r in aggregated_roles if r.confidence < 0.75
-            ],
-            "disambiguation": disamb,
-            "entity_linking_confidence": getattr(link, "confidence", None),
-            "taxonomy": taxonomy,
-            "links": links
-        }
-
-        raw_reason = self.reason_summarizer.summarize(reason_payload)
-
-        final_reason_list = normalize_reason_output(raw_reason)
-
-        numbered_reason_list = _number_reason_paragraphs(final_reason_list)
-
-
-        # if the summarizer returned no distinct paragraphs, fall back to deterministic basis
-        if not numbered_reason_list:
-            basis = [r.title for r in trusted_roles]
-            numbered_reason_list = [
-                f"1. Deterministic basis: roles confirmed: {', '.join(basis)}"
-            ]
-
-        # --- 10. basis_for_pep_association (deterministic short string) ---
-        basis_for_pep_association = "; ".join(
-            [f"{r.title} ({r.source}, conf={r.confidence})" for r in trusted_roles]
-        )
-
-        # --- 11. FINAL PROFILE POPULATION: pull biographic fields safely ---
         return PEPProfile(
             name=name,
-            gender=ConfidenceValue(value=bio.get("gender") or "Male", confidence="High") if bio.get("gender") else ConfidenceValue(value="Male", confidence="High"),
-            middle_name=bio.get("middle_name", "") or "",
-            aliases=bio.get("aliases", []),
-            other_names=bio.get("other_names", []),
+            gender=None,
+            middle_name="",
+            aliases=[],
+            other_names=[],
             is_pep=True,
-            pep_level=taxonomy.get("pep_level", "Unknown"),
-            organisation_or_party=candidate_org,
-            current_positions=current_positions,
-            previous_positions=previous_positions,
-            date_of_birth=bio.get("date_of_birth", "") or "",
-            age=bio.get("age"),
-            education=bio.get("education", []),
-            relatives=bio.get("relatives", []),
-            associates=bio.get("associates", []),
-            state=bio.get("state", "") or "",
+            pep_level="PEP",
+            organisation_or_party="",
+            current_positions=roles,
+            previous_positions=[],
+            date_of_birth="",
+            age=None,
+            education=[],
+            relatives=[],
+            associates=[],
+            state="",
             country=country,
-            reason=numbered_reason_list,
-            alive_or_deceased=LifeStatus(status=bio.get("alive_or_deceased", "Alive"), date_of_death=""),
+            reason=numbered_reasons,
+            alive_or_deceased=None,
             pep_association=False,
-            basis_for_pep_association=basis_for_pep_association,
-            links=links,
-            information_recency=information_recency,
-            image=[img if isinstance(img, str) else img.get("url") for img in images],
-            additional_information=AdditionalInformation(
-                linkedin_profile=social.get("linkedin_profile", {}),
-                instagram_profile=social.get("instagram_profile", {}),
-                facebook_profile=social.get("facebook_profile", {}),
-                twitter_profile=social.get("twitter_profile", {}),
-                notable_achievements=bio.get("notable_achievements", [])
-            ),
-            titles=current_positions
+            basis_for_pep_association="; ".join(roles),
+            links=[],
+            information_recency="Verified via structured open-source datasets",
+            image=[],
+            additional_information=AdditionalInformation(),
+            titles=roles,
         )
 
-    # --- Helper for not-PEP responses ---
-    def _not_pep(self, name, country, reasons: List[str]):
-        # ensure reasons is a list of properly numbered strings
-        numbered = []
-        for i, r in enumerate(reasons):
-            # if already a numbered string, keep; otherwise add numbering
-            if re.match(r"^\s*\d+\.", r):
-                numbered.append(r.strip())
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+    @staticmethod
+    def calculate_age(dob: str) -> ConfidenceValue:
+        try:
+            birth_date = datetime.strptime(dob, "%Y-%m-%d").date()
+            today = date.today()
+            age = today.year - birth_date.year - (
+                (today.month, today.day) < (birth_date.month, birth_date.day)
+            )
+            return ConfidenceValue(value=str(age), confidence="High")
+        except Exception:
+            return ConfidenceValue(value="Unknown", confidence="Low")
+
+    def _roles_imply_alive(self, roles) -> bool:
+        for role in roles:
+            # Must be explicitly marked current
+            if getattr(role, "is_current", False) is True:
+                return True
+
+            # End date must be both present AND recent
+            end_date = getattr(role, "end_date", None)
+            if end_date:
+                try:
+                    if end_date.year >= self.CURRENT_YEAR - 1:
+                        return True
+                except Exception:
+                    pass
+
+        return False
+
+
+    async def _resolve_life_status(self, name: str, bio: dict, roles) -> LifeStatus:
+        # 1. Explicit death date
+        if bio.get("date_of_death"):
+            return LifeStatus(
+                status="Deceased",
+                date_of_death=bio.get("date_of_death") or None
+            )
+    
+        # 2. DOB sanity check
+        dob = bio.get("date_of_birth")
+        if dob:
+            age_cv = self.calculate_age(dob)
+            try:
+                if int(age_cv.value) > 120:
+                    return LifeStatus(status="Deceased", date_of_death="")
+            except Exception:
+                pass
+            
+        # 3. LLM fallback
+        inferred = await _infer_alive_or_deceased(name, self.llm_service)
+        inferred_status = None
+        inferred_date_of_death = None
+    
+        if isinstance(inferred, LifeStatus):
+            inferred_status = inferred.status
+            inferred_date_of_death = inferred.date_of_death
+        elif hasattr(inferred, "status"):
+            inferred_status = inferred.status
+            inferred_date_of_death = getattr(inferred, "date_of_death", None)
+        elif isinstance(inferred, str) and inferred in {"Alive", "Deceased"}:
+            inferred_status = inferred
+    
+        # 4. Role-based weak signal (ONLY if LLM inconclusive)
+        if inferred_status is None or inferred_status == "Unknown":
+            if roles and self._roles_imply_alive(roles):
+                return LifeStatus(status="Alive", date_of_death="")
+    
+        # 5. Return what LLM inferred if available
+        if inferred_status in {"Alive", "Deceased"}:
+            return LifeStatus(status=inferred_status, date_of_death=inferred_date_of_death)
+    
+        # 6. Safe default
+        return LifeStatus(status="Unknown", date_of_death="")
+
+
+    # ------------------------------------------------------------
+    # Main Evaluation
+    # ------------------------------------------------------------
+    async def evaluate(
+        self,
+        name: str,
+        country: str,
+        structured_evidence: Optional[List[dict]] = None,
+    ) -> PEPProfile:
+        try:
+            # ---------- Structured evidence ----------
+            is_structured, roles, reasons = self._evaluate_structured_pep(
+                structured_evidence
+            )
+            if is_structured:
+                return self._build_structured_pep_profile(
+                    name, country, roles, reasons
+                )
+
+            # ---------- Role enrichment ----------
+            enriched = await self.role_enricher.enrich(name, country)
+            roles = enriched.get("roles", [])
+            bio = enriched.get("evidence", {})
+
+            if not roles:
+                return self._not_pep(name, country, ["No public roles discovered."])
+
+            aggregated = self.confidence_aggregator.aggregate(roles)
+            trusted = [r for r in aggregated if r.confidence >= 0.75]
+
+            if not trusted:
+                return self._not_pep(
+                    name, country, ["No roles met confidence threshold."]
+                )
+
+            current, previous = split_current_previous_roles(
+                trusted, self.taxonomy
+            )
+            primary = max(trusted, key=lambda r: r.confidence)
+
+            # ---------- Disambiguation ----------
+            if not self.disambiguator.disambiguate(
+                query_name=name,
+                candidate_name=name,
+                query_country=country,
+                candidate_country=country,
+            ).get("match"):
+                return self._not_pep(name, country, ["Name disambiguation failed."])
+
+            # ---------- Entity linking ----------
+            link = self.entity_linker.link(
+                query_name=name,
+                candidate_name=name,
+                query_country=country,
+                candidate_country=country,
+                query_positions=current,
+                candidate_positions=current,
+                query_org=primary.organisation,
+                candidate_org=primary.organisation,
+                source_credibility=1.0,
+            )
+
+            if link.confidence < 0.65:
+                return self._not_pep(
+                    name, country, ["Entity linking confidence too low."]
+                )
+
+            taxonomy = self.taxonomy.classify(current)
+            if taxonomy.get("pep_level") == "Not a PEP":
+                return self._not_pep(
+                    name, country, ["Roles do not meet PEP taxonomy criteria."]
+                )
+
+            # ---------- Reasons ----------
+            raw = await self.reason_summarizer.summarize(
+                {
+                    "entity": {"name": name, "country": country},
+                    "roles": [
+                        {
+                            "title": r.title,
+                            "organisation": r.organisation,
+                            "confidence": r.confidence,
+                        }
+                        for r in trusted
+                    ],
+                    "taxonomy": taxonomy,
+                    "entity_linking_confidence": link.confidence,
+                }
+            )
+
+            numbered = _number_reason_paragraphs(normalize_reason_output(raw))
+
+            # ---------- Bio ----------
+            dob = bio.get("date_of_birth") or await _infer_dob(name, self.llm_service)
+            age = self.calculate_age(dob) if dob else ConfidenceValue(value="Unknown", confidence="Low")
+
+            # ---------- Gender ----------
+            gender = None
+            if isinstance(bio.get("gender"), str):
+                gender = ConfidenceValue(value=bio["gender"], confidence="High")
             else:
-                numbered.append(f"{i+1}. {r.strip()}")
+                inferred = await _infer_gender(name, self.llm_service)
+                if isinstance(inferred, str):
+                    gender = ConfidenceValue(value=inferred, confidence="Low")
+                elif hasattr(inferred, "value"):
+                    gender = ConfidenceValue(
+                        value=inferred.value,
+                        confidence=inferred.confidence or "Low",
+                    )
+                else:
+                    gender = ConfidenceValue(value="Unknown", confidence="Low")
+
+            # ---------- Life status ----------
+            alive_or_deceased = await self._resolve_life_status(name, bio, trusted)
+
+            # ---------- Social profiles ----------
+            social = await self.social_profile_agent.resolve(name=name, country=country)
+            linkedin = social.get("linkedin") or social.get("linkedin_profile") or {}
+            twitter = social.get("twitter") or social.get("twitter_profile") or {}
+            facebook = social.get("facebook") or social.get("facebook_profile") or {}
+            instagram = (
+                social.get("instagram") or social.get("instagram_profile") or {}
+            )
+
+            # ---------- Final profile ----------
+            return PEPProfile(
+                name=name,
+                gender=gender,
+                middle_name=bio.get("middle_name", ""),
+                aliases=await _infer_aliases(name, self.llm_service),
+                other_names=bio.get("other_names", []),
+                is_pep=True,
+                pep_level=taxonomy.get("pep_level", "PEP"),
+                organisation_or_party=primary.organisation or "",
+                current_positions=current,
+                previous_positions=previous,
+                date_of_birth=dob or "",
+                age=age,
+                education=await _infer_education(name, self.llm_service),
+                relatives=await _infer_relatives(name, self.llm_service),
+                associates=await _infer_associates(name, self.llm_service),
+                state=await _infer_state(name, self.llm_service),
+                country=country,
+                reason=numbered,
+                alive_or_deceased=alive_or_deceased,
+                pep_association=False,
+                basis_for_pep_association="; ".join(numbered),
+                links=[],
+                information_recency=f"Verified as of {datetime.utcnow().year}",
+                image=bio.get("images", []),
+                additional_information=AdditionalInformation(
+                    linkedin_profile=linkedin,
+                    twitter_profile=twitter,
+                    facebook_profile=facebook,
+                    instagram_profile=instagram,
+                    notable_achievements=bio.get("notable_achievements", []),
+                ),
+                titles=current,
+            )
+
+        except Exception as e:
+            logger.exception("Unexpected error evaluating PEP")
+            return self._not_pep(name, country, [f"Internal error: {e}"])
+
+    # ------------------------------------------------------------
+    # Not PEP
+    # ------------------------------------------------------------
+    def _not_pep(self, name: str, country: str, reasons: List[str]) -> PEPProfile:
         return PEPProfile(
             name=name,
             gender=None,
@@ -329,13 +446,13 @@ class PEPAgent:
             associates=[],
             state="",
             country=country,
-            reason=numbered,
+            reason=_number_reason_paragraphs(reasons),
             alive_or_deceased=None,
             pep_association=False,
             basis_for_pep_association="",
             links=[],
-            information_recency="",
+            information_recency="Verification date unknown",
             image=[],
             additional_information=AdditionalInformation(),
-            titles=[]
+            titles=[],
         )

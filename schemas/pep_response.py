@@ -1,63 +1,90 @@
 # schemas/pep_response.py
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 
+# ============================================================
+# COMMON
+# ============================================================
+
 class ConfidenceValueSchema(BaseModel):
-    value: str
-    confidence: str
+    value: str = Field(default="Unknown")
+    confidence: str = Field(default="Low")
 
 
 class LifeStatusSchema(BaseModel):
-    status: str
-    date_of_death: str = ""
+    status: str = Field(default="Unknown")
+    date_of_death: str = Field(default="")
 
 
 class AdditionalInformationSchema(BaseModel):
-    linkedin_profile: dict = Field(default_factory=dict)
-    instagram_profile: dict = Field(default_factory=dict)
-    facebook_profile: dict = Field(default_factory=dict)
-    twitter_profile: dict = Field(default_factory=dict)
+    linkedin_profile: Dict = Field(default_factory=dict)
+    instagram_profile: Dict = Field(default_factory=dict)
+    facebook_profile: Dict = Field(default_factory=dict)
+    twitter_profile: Dict = Field(default_factory=dict)
     notable_achievements: List[str] = Field(default_factory=list)
 
 
+# ============================================================
+# PEP PROFILE (API VIEW)
+# ============================================================
+
 class PEPProfileSchema(BaseModel):
     name: str
-    gender: Optional[ConfidenceValueSchema]
+
+    # Identity
+    gender: Optional[ConfidenceValueSchema] = None
     middle_name: str = ""
     aliases: List[str] = Field(default_factory=list)
     other_names: List[str] = Field(default_factory=list)
 
+    # PEP status
     is_pep: bool
     pep_level: str
-    organisation_or_party: str
-
-    current_positions: List[str] = Field(default_factory=list)
-    previous_positions: List[str] = Field(default_factory=list)
-
-    date_of_birth: str = ""
-    age: Optional[int]
-    education: List[str] = Field(default_factory=list)
-    relatives: List[dict] = Field(default_factory=list)
-    associates: List[dict] = Field(default_factory=list)
-    state: str = ""
-    country: str
-
-    reason: List[str] = Field(default_factory=list)
-
-    alive_or_deceased: Optional[LifeStatusSchema]
-    pep_association: bool
+    pep_association: bool = False
     basis_for_pep_association: str = ""
 
-    links: List[str] = Field(default_factory=list)
-    information_recency: str = ""
-    image: List[str] = Field(default_factory=list)
-
-    additional_information: AdditionalInformationSchema
+    # Political / organizational
+    organisation_or_party: str = ""
+    current_positions: List[str] = Field(default_factory=list)
+    previous_positions: List[str] = Field(default_factory=list)
     titles: List[str] = Field(default_factory=list)
 
+    # Demographics
+    date_of_birth: str = ""
+    age: Optional[ConfidenceValueSchema] = None
+
+    # Education & relations
+    education: List[Any] = Field(default_factory=list)
+    relatives: List[Any] = Field(default_factory=list)
+    associates: List[Any] = Field(default_factory=list)
+
+    # Geography
+    state: str = ""
+    country: str = ""
+
+    # Evidence
+    reason: List[str] = Field(default_factory=list)
+    links: List[str] = Field(default_factory=list)
+    information_recency: str = ""
+
+    # Life status
+    alive_or_deceased: Optional[LifeStatusSchema] = None
+
+    # Media
+    image: List[Any] = Field(default_factory=list)
+
+    # Enrichment
+    additional_information: AdditionalInformationSchema = Field(
+        default_factory=AdditionalInformationSchema
+    )
+
+
+# ============================================================
+# FINAL RESPONSE
+# ============================================================
 
 class ScreeningResponseSchema(BaseModel):
     pep: PEPProfileSchema
-    adverse_media: dict
+    adverse_media: Dict
     audit_trace_id: str
